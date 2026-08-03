@@ -29,7 +29,8 @@ import java.time.Instant
 @OptIn(ExperimentalCamera2Interop::class)
 class EvidenceRecorder(
     private val context: Context,
-    private val lifecycleOwner: LifecycleOwner
+    private val lifecycleOwner: LifecycleOwner,
+    private val withPreview: Boolean = true
 ) {
     var isRecording: Boolean = false
         private set
@@ -87,11 +88,6 @@ class EvidenceRecorder(
         quality: VideoQuality,
         rotation: Int
     ) {
-        val preview = Preview.Builder()
-            .setTargetRotation(rotation)
-            .build()
-            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-
         val recorder = Recorder.Builder()
             .setQualitySelector(qualitySelectorFor(quality))
             .build()
@@ -99,8 +95,15 @@ class EvidenceRecorder(
             it.targetRotation = rotation
         }
 
-        val group = UseCaseGroup.Builder()
-            .addUseCase(preview)
+        val groupBuilder = UseCaseGroup.Builder()
+        if (withPreview) {
+            val preview = Preview.Builder()
+                .setTargetRotation(rotation)
+                .build()
+                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+            groupBuilder.addUseCase(preview)
+        }
+        val group = groupBuilder
             .addUseCase(videoCapture!!)
             .build()
 

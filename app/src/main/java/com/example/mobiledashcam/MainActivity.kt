@@ -2,12 +2,12 @@ package com.example.mobiledashcam
 
 import android.Manifest
 import android.app.AlertDialog
-import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
     private var selectedQuality = VideoQuality.FHD_1080P
     private var controlsReady = false
     private var isBindingCamera = false
+    private var recordingByService = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,7 +60,7 @@ class MainActivity : ComponentActivity() {
             setShadowLayer(5f, 1.5f, 1.5f, 0xcc000000.toInt())
             setPadding(dp(16), dp(10), dp(16), dp(10))
         }
-        root.addView(watermark, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        root.addView(watermark, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END))
 
         statusText = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -72,22 +73,24 @@ class MainActivity : ComponentActivity() {
         })
 
         cameraButton = iconButton("C").apply {
+            contentDescription = "选择摄像头"
             setOnClickListener { showCameraDialog() }
         }
         qualityButton = iconButton("HD").apply {
+            contentDescription = "选择分辨率"
             setOnClickListener { showQualityDialog() }
         }
         recordButton = ImageButton(this).apply {
-            background = oval(Color.TRANSPARENT, 0xffff3b30.toInt(), dp(6))
-            setImageDrawable(ovalIcon(0xffff3b30.toInt(), true))
-            scaleType = ImageView.ScaleType.CENTER
+            setBackgroundColor(Color.TRANSPARENT)
+            setImageDrawable(RecordButtonDrawable(false))
+            scaleType = ImageView.ScaleType.FIT_CENTER
             contentDescription = "开始录制"
             setOnClickListener { toggleRecording() }
         }
 
         root.addView(cameraButton, FrameLayout.LayoutParams(dp(52), dp(52)))
         root.addView(qualityButton, FrameLayout.LayoutParams(dp(52), dp(52)))
-        root.addView(recordButton, FrameLayout.LayoutParams(dp(78), dp(78)))
+        root.addView(recordButton, FrameLayout.LayoutParams(dp(86), dp(86)))
 
         setContentView(root)
         layoutControls()
@@ -96,7 +99,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestPermissionsIfNeeded() {
-        val permissions = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        val permissions = buildList {
+            add(Manifest.permission.CAMERA)
+            add(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         val missing = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -112,7 +119,7 @@ class MainActivity : ComponentActivity() {
         if (requestCode == 7 && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
             loadCamerasAndStart()
         } else {
-            Toast.makeText(this, "需要摄像头和麦克风权限", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "需要摄像头、麦克风和通知权限", Toast.LENGTH_LONG).show()
             AppLogger.log(this, "permissions denied")
         }
     }
@@ -132,7 +139,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showCameraDialog() {
-        if (recorder.isRecording) return
+        if (recordingByService) return
         if (cameraOptions.isEmpty()) {
             Toast.makeText(this, "摄像头还没有准备好", Toast.LENGTH_SHORT).show()
             return
@@ -149,7 +156,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showQualityDialog() {
-        if (recorder.isRecording) return
+        if (recordingByService) return
         val qualities = listOf(VideoQuality.FHD_1080P, VideoQuality.HD_720P)
         val labels = qualities.map { it.label }.toTypedArray()
         AlertDialog.Builder(this)
@@ -186,35 +193,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toggleRecording() {
-        if (recorder.isRecording) {
-            recordButton.isEnabled = false
-            statusText.text = "正在保存..."
-            recorder.stopRecording()
+        if (recordingByService) {
+            DashcamRecordingService.stop(this)
+            setRecordingUi(false)
+            Toast.makeText(this, "正在保存视频...", Toast.LENGTH_SHORT).show()
         } else {
             if (!startSelectedCamera()) return
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
-            AppLogger.log(this, "recording orientation locked")
+            recorder.release()
+            DashcamRecordingService.start(this)
             setRecordingUi(true)
-            recorder.startRecording(WatermarkFrameProvider { watermark.text.toString() }) { result ->
-                runOnUiThread {
-                    setRecordingUi(false)
-                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-                    result.onSuccess {
-                        EvidenceMetadataWriter.write(this, it)
-                        Toast.makeText(this, "视频已保存到 MobileDashcam", Toast.LENGTH_SHORT).show()
-                    }.onFailure {
-                        Toast.makeText(this, "录制失败：${it.message}", Toast.LENGTH_LONG).show()
-                        AppLogger.log(this, "record failed callback", it)
-                    }
-                }
-            }
+            Toast.makeText(this, "已开始后台录制", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun setRecordingUi(recording: Boolean) {
-        recordButton.isEnabled = true
+        recordingByService = recording
         recordButton.contentDescription = if (recording) "停止录制" else "开始录制"
-        recordButton.setImageDrawable(ovalIcon(if (recording) Color.WHITE else 0xffff3b30.toInt(), !recording))
+        recordButton.setImageDrawable(RecordButtonDrawable(recording))
         cameraButton.isEnabled = !recording
         qualityButton.isEnabled = !recording
         cameraButton.alpha = if (recording) 0.35f else 1f
@@ -258,16 +253,16 @@ class MainActivity : ComponentActivity() {
         }
         (cameraButton.layoutParams as FrameLayout.LayoutParams).apply {
             gravity = if (landscape) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM or Gravity.START
-            rightMargin = if (landscape) dp(42) else 0
+            rightMargin = if (landscape) dp(45) else 0
             leftMargin = if (landscape) 0 else dp(28)
-            bottomMargin = if (landscape) dp(92) else dp(42)
+            bottomMargin = if (landscape) dp(96) else dp(46)
             cameraButton.layoutParams = this
         }
         (qualityButton.layoutParams as FrameLayout.LayoutParams).apply {
             gravity = if (landscape) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM or Gravity.END
-            rightMargin = if (landscape) dp(42) else dp(28)
-            bottomMargin = if (landscape) 0 else dp(42)
-            topMargin = if (landscape) dp(92) else 0
+            rightMargin = if (landscape) dp(45) else dp(28)
+            bottomMargin = if (landscape) 0 else dp(46)
+            topMargin = if (landscape) dp(96) else 0
             qualityButton.layoutParams = this
         }
     }
@@ -277,10 +272,7 @@ class MainActivity : ComponentActivity() {
         AppLogger.log(this, "onConfigurationChanged orientation=${newConfig.orientation}")
         layoutControls()
         repositionWatermark()
-        if (recorder.isRecording) {
-            Toast.makeText(this, "录制中已锁定方向，停止后可旋转", Toast.LENGTH_SHORT).show()
-            AppLogger.log(this, "orientation changed while recording; locked")
-        } else if (controlsReady && !isBindingCamera) {
+        if (!recordingByService && controlsReady && !isBindingCamera) {
             startSelectedCamera()
         }
     }
@@ -288,7 +280,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         AppLogger.log(this, "MainActivity onDestroy")
         timer?.cancel()
-        recorder.release()
+        if (!recordingByService) recorder.release()
         super.onDestroy()
     }
 
@@ -297,17 +289,10 @@ class MainActivity : ComponentActivity() {
             background = oval(0x66000000, Color.WHITE, dp(1))
             setImageDrawable(textIcon(label))
             scaleType = ImageView.ScaleType.CENTER
-            contentDescription = label
         }
     }
 
     private fun textIcon(label: String) = TextDrawable(label, Color.WHITE, 15f, Typeface.DEFAULT_BOLD)
-
-    private fun ovalIcon(color: Int, ring: Boolean) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(if (ring) Color.TRANSPARENT else color)
-        setStroke(if (ring) dp(7) else 0, color)
-    }
 
     private fun oval(fill: Int, stroke: Int, strokeWidth: Int) = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
