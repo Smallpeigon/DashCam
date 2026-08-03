@@ -2,6 +2,10 @@ package com.example.mobiledashcam
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
@@ -38,6 +42,11 @@ class MainActivity : ComponentActivity() {
     private var controlsReady = false
     private var isBindingCamera = false
     private var recordingByService = false
+    private val recordingStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            refreshRecordingState()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,6 +107,26 @@ class MainActivity : ComponentActivity() {
         startClock()
     }
 
+    override fun onStart() {
+        super.onStart()
+        ContextCompat.registerReceiver(
+            this,
+            recordingStateReceiver,
+            IntentFilter(DashcamRecordingService.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshRecordingState()
+    }
+
+    override fun onStop() {
+        runCatching { unregisterReceiver(recordingStateReceiver) }
+        super.onStop()
+    }
+
     private fun requestPermissionsIfNeeded() {
         val permissions = buildList {
             add(Manifest.permission.CAMERA)
@@ -131,7 +160,11 @@ class MainActivity : ComponentActivity() {
             selectedCameraIndex = cameras.indexOfFirst { it.cameraId == savedId }.takeIf { it >= 0 } ?: 0
             controlsReady = true
             updateStatusText()
-            startSelectedCamera()
+            if (DashcamRecordingService.isRecordingActive) {
+                setRecordingUi(true)
+            } else {
+                startSelectedCamera()
+            }
         }, { error ->
             Toast.makeText(this, "读取摄像头失败：${error.message}", Toast.LENGTH_LONG).show()
             AppLogger.log(this, "loadCamerasAndStart failed", error)
@@ -173,6 +206,10 @@ class MainActivity : ComponentActivity() {
 
     private fun startSelectedCamera(): Boolean {
         AppLogger.log(this, "startSelectedCamera index=$selectedCameraIndex quality=${selectedQuality.label}")
+        if (DashcamRecordingService.isRecordingActive) {
+            setRecordingUi(true)
+            return false
+        }
         val camera = cameraOptions.getOrNull(selectedCameraIndex) ?: return false
         isBindingCamera = true
         val result = recorder.startCamera(camera, selectedQuality)
@@ -195,19 +232,30 @@ class MainActivity : ComponentActivity() {
     private fun toggleRecording() {
         if (recordingByService) {
             DashcamRecordingService.stop(this)
-            setRecordingUi(false)
+            setSavingUi()
             Toast.makeText(this, "正在保存视频...", Toast.LENGTH_SHORT).show()
         } else {
             if (!startSelectedCamera()) return
-            recorder.release()
+            recorder.unbindCamera()
             DashcamRecordingService.start(this)
             setRecordingUi(true)
             Toast.makeText(this, "已开始后台录制", Toast.LENGTH_SHORT).show()
         }
     }
 
+    private fun refreshRecordingState() {
+        val active = DashcamRecordingService.isRecordingActive
+        if (active) {
+            setRecordingUi(true)
+        } else if (recordingByService) {
+            setRecordingUi(false)
+            if (controlsReady) loadCamerasAndStart()
+        }
+    }
+
     private fun setRecordingUi(recording: Boolean) {
         recordingByService = recording
+        recordButton.isEnabled = true
         recordButton.contentDescription = if (recording) "停止录制" else "开始录制"
         recordButton.setImageDrawable(RecordButtonDrawable(recording))
         cameraButton.isEnabled = !recording
@@ -215,6 +263,15 @@ class MainActivity : ComponentActivity() {
         cameraButton.alpha = if (recording) 0.35f else 1f
         qualityButton.alpha = if (recording) 0.35f else 1f
         updateStatusText(if (recording) "录制中" else null)
+    }
+
+    private fun setSavingUi() {
+        recordingByService = true
+        recordButton.setImageDrawable(RecordButtonDrawable(true))
+        recordButton.isEnabled = false
+        cameraButton.isEnabled = false
+        qualityButton.isEnabled = false
+        statusText.text = "正在保存..."
     }
 
     private fun updateStatusText(prefix: String? = null) {
@@ -272,7 +329,7 @@ class MainActivity : ComponentActivity() {
         AppLogger.log(this, "onConfigurationChanged orientation=${newConfig.orientation}")
         layoutControls()
         repositionWatermark()
-        if (!recordingByService && controlsReady && !isBindingCamera) {
+        if (!recordingByService && controlsReady && !isBindingCamera && !DashcamRecordingService.isRecordingActive) {
             startSelectedCamera()
         }
     }

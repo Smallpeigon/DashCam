@@ -174,6 +174,12 @@ class EvidenceRecorder(
         runCatching { activeRecording?.stop() }.onFailure { AppLogger.log(context, "stopRecording failed", it) }
     }
 
+    fun unbindCamera() {
+        AppLogger.log(context, "unbindCamera")
+        runCatching { cameraProvider?.unbindAll() }.onFailure { AppLogger.log(context, "unbindCamera failed", it) }
+        videoCapture = null
+    }
+
     fun release() {
         AppLogger.log(context, "release")
         runCatching { activeRecording?.stop() }

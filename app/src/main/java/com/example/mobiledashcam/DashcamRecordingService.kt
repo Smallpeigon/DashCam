@@ -48,6 +48,8 @@ class DashcamRecordingService : LifecycleService() {
             return
         }
 
+        isRecordingActive = true
+        notifyStateChanged()
         startForeground(NOTIFICATION_ID, notification("正在录制"))
         recorder.loadCameras({ cameras ->
             val savedCameraId = UserSettings.loadCameraId(this)
@@ -64,6 +66,8 @@ class DashcamRecordingService : LifecycleService() {
             recorder.startRecording(WatermarkFrameProvider { LocalDateTime.now().format(formatter) }) { result ->
                 result.onSuccess { EvidenceMetadataWriter.write(this, it) }
                 result.onFailure { AppLogger.log(this, "background record failed", it) }
+                isRecordingActive = false
+                notifyStateChanged()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -84,8 +88,16 @@ class DashcamRecordingService : LifecycleService() {
 
     override fun onDestroy() {
         if (recorder.isRecording) recorder.stopRecording()
+        if (isRecordingActive && !recorder.isRecording) {
+            isRecordingActive = false
+            notifyStateChanged()
+        }
         recorder.release()
         super.onDestroy()
+    }
+
+    private fun notifyStateChanged() {
+        sendBroadcast(Intent(ACTION_STATE_CHANGED).setPackage(packageName))
     }
 
     private fun hasRequiredPermissions(): Boolean {
@@ -129,6 +141,8 @@ class DashcamRecordingService : LifecycleService() {
         private const val CHANNEL_ID = "dashcam_recording"
         private const val NOTIFICATION_ID = 31
         private const val ACTION_STOP = "com.example.mobiledashcam.STOP_RECORDING"
+        const val ACTION_STATE_CHANGED = "com.example.mobiledashcam.RECORDING_STATE_CHANGED"
+        @Volatile var isRecordingActive: Boolean = false
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, DashcamRecordingService::class.java))
