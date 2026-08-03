@@ -20,6 +20,7 @@ import java.time.format.DateTimeFormatter
 class DashcamRecordingService : LifecycleService() {
     private lateinit var recorder: EvidenceRecorder
     private val formatter = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss")
+    private var recorderReleased = false
 
     override fun onCreate() {
         super.onCreate()
@@ -55,24 +56,26 @@ class DashcamRecordingService : LifecycleService() {
             val savedCameraId = UserSettings.loadCameraId(this)
             val camera = cameras.firstOrNull { it.cameraId == savedCameraId } ?: cameras.firstOrNull()
             if (camera == null) {
+                finishServiceRecording()
                 stopSelf()
                 return@loadCameras
             }
             val quality = UserSettings.loadQuality(this)
             if (recorder.startCamera(camera, quality).isFailure) {
+                finishServiceRecording()
                 stopSelf()
                 return@loadCameras
             }
             recorder.startRecording(WatermarkFrameProvider { LocalDateTime.now().format(formatter) }) { result ->
                 result.onSuccess { EvidenceMetadataWriter.write(this, it) }
                 result.onFailure { AppLogger.log(this, "background record failed", it) }
-                isRecordingActive = false
-                notifyStateChanged()
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                finishServiceRecording()
                 stopSelf()
             }
         }, {
             AppLogger.log(this, "background load cameras failed", it)
+            finishServiceRecording()
             stopSelf()
         })
     }
@@ -82,22 +85,32 @@ class DashcamRecordingService : LifecycleService() {
             startForeground(NOTIFICATION_ID, notification("正在保存..."))
             recorder.stopRecording()
         } else {
+            finishServiceRecording()
             stopSelf()
         }
     }
 
     override fun onDestroy() {
         if (recorder.isRecording) recorder.stopRecording()
-        if (isRecordingActive && !recorder.isRecording) {
-            isRecordingActive = false
-            notifyStateChanged()
+        if (!recorderReleased) {
+            recorder.release()
+            recorderReleased = true
         }
-        recorder.release()
+        if (isRecordingActive && !recorder.isRecording) finishServiceRecording()
         super.onDestroy()
     }
 
     private fun notifyStateChanged() {
         sendBroadcast(Intent(ACTION_STATE_CHANGED).setPackage(packageName))
+    }
+
+    private fun finishServiceRecording() {
+        if (!recorderReleased) {
+            recorder.release()
+            recorderReleased = true
+        }
+        isRecordingActive = false
+        notifyStateChanged()
     }
 
     private fun hasRequiredPermissions(): Boolean {
