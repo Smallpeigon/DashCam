@@ -1,27 +1,23 @@
-﻿# Android Dashcam App
+# 鸽录仪 DashCam
 
-Native Android MVP skeleton for the mobile dashcam app.
+安卓手机版行车记录仪。
 
-Current prototype includes:
+## 当前功能
 
-- Real CameraX preview and MP4 recording path.
-- Camera permission and microphone permission flow.
-- Multi-camera picker using Camera2 camera IDs.
-- Saved default camera selection.
-- 1080p / 720p recording quality picker with saved default.
-- Portrait/landscape-aware visible timestamp watermark position.
-- Evidence clip metadata model.
-- SHA-256 hash generation after recording finalizes.
-- JSON metadata export beside each recorded clip, including selected camera ID and quality.
+- CameraX 实时预览和 MP4 录制。
+- 可选择手机暴露出的多个摄像头，并记住默认摄像头。
+- 可选择 1080p / 720p 录制分辨率，并记住默认分辨率。
+- 视频保存到系统相册 `Movies/MobileDashcam`。
+- 视频导出时烧录右下角时间水印，格式为 `yyyy/MM/dd HH:mm:ss`。
+- 录制完成后生成证据元数据，包括摄像头 ID、分辨率、时间范围和 SHA-256。
+- 全屏相机风格界面，录制按钮和设置入口覆盖在预览画面上。
 
-Notes:
+## 说明
 
-- Some Android phones expose multiple rear lenses as separate camera IDs, while some expose them as one logical camera. This implementation lists the camera IDs CameraX reports on the device.
-- The visible timestamp overlay is shown in the app preview. A later step should burn the timestamp into exported video frames if the evidence workflow requires the watermark to be part of the actual pixels.
+不同安卓手机暴露摄像头的方式不同。有的手机会把多个后置镜头显示为多个 camera ID，有的会显示为一个逻辑摄像头。本项目按 CameraX 在设备上实际报告的摄像头列表展示。
 
-Next implementation step:
+调试 APK 构建后位于：
 
-- Add loop recording and protected clips.
-- Add bitrate tuning and storage limit controls.
-- Add GPS metadata and optional location watermark.
-- Add a proper settings screen instead of compact controls over the preview.
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
