@@ -44,7 +44,9 @@ class MainActivity : ComponentActivity() {
     private var recordingByService = false
     private val recordingStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            refreshRecordingState()
+            if (intent?.action == DashcamRecordingService.ACTION_STOP_REQUESTED && recorder.isRecording) {
+                toggleRecording()
+            }
         }
     }
 
@@ -112,14 +114,14 @@ class MainActivity : ComponentActivity() {
         ContextCompat.registerReceiver(
             this,
             recordingStateReceiver,
-            IntentFilter(DashcamRecordingService.ACTION_STATE_CHANGED),
+            IntentFilter(DashcamRecordingService.ACTION_STOP_REQUESTED),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
     }
 
     override fun onResume() {
         super.onResume()
-        refreshRecordingState()
+        if (recorder.isRecording) setRecordingUi(true)
     }
 
     override fun onStop() {
@@ -160,11 +162,7 @@ class MainActivity : ComponentActivity() {
             selectedCameraIndex = cameras.indexOfFirst { it.cameraId == savedId }.takeIf { it >= 0 } ?: 0
             controlsReady = true
             updateStatusText()
-            if (DashcamRecordingService.isRecordingActive) {
-                setRecordingUi(true)
-            } else {
-                startSelectedCamera()
-            }
+            startSelectedCamera()
         }, { error ->
             Toast.makeText(this, "读取摄像头失败：${error.message}", Toast.LENGTH_LONG).show()
             AppLogger.log(this, "loadCamerasAndStart failed", error)
@@ -206,10 +204,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startSelectedCamera(): Boolean {
         AppLogger.log(this, "startSelectedCamera index=$selectedCameraIndex quality=${selectedQuality.label}")
-        if (DashcamRecordingService.isRecordingActive) {
-            setRecordingUi(true)
-            return false
-        }
+        if (recorder.isRecording) return true
         val camera = cameraOptions.getOrNull(selectedCameraIndex) ?: return false
         isBindingCamera = true
         val result = recorder.startCamera(camera, selectedQuality)
@@ -231,25 +226,28 @@ class MainActivity : ComponentActivity() {
 
     private fun toggleRecording() {
         if (recordingByService) {
-            DashcamRecordingService.stop(this)
             setSavingUi()
+            recorder.stopRecording()
             Toast.makeText(this, "正在保存视频...", Toast.LENGTH_SHORT).show()
         } else {
             if (!startSelectedCamera()) return
-            recorder.unbindCamera()
             DashcamRecordingService.start(this)
             setRecordingUi(true)
+            recorder.startRecording(WatermarkFrameProvider { watermark.text.toString() }) { result ->
+                runOnUiThread {
+                    DashcamRecordingService.stop(this)
+                    setRecordingUi(false)
+                    result.onSuccess {
+                        EvidenceMetadataWriter.write(this, it)
+                        Toast.makeText(this, "视频已保存到 MobileDashcam", Toast.LENGTH_SHORT).show()
+                    }.onFailure {
+                        Toast.makeText(this, "录制失败：${it.message}", Toast.LENGTH_LONG).show()
+                        AppLogger.log(this, "record failed callback", it)
+                    }
+                    if (controlsReady) startSelectedCamera()
+                }
+            }
             Toast.makeText(this, "已开始后台录制", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun refreshRecordingState() {
-        val active = DashcamRecordingService.isRecordingActive
-        if (active) {
-            setRecordingUi(true)
-        } else if (recordingByService) {
-            setRecordingUi(false)
-            if (controlsReady) loadCamerasAndStart()
         }
     }
 
@@ -329,7 +327,7 @@ class MainActivity : ComponentActivity() {
         AppLogger.log(this, "onConfigurationChanged orientation=${newConfig.orientation}")
         layoutControls()
         repositionWatermark()
-        if (!recordingByService && controlsReady && !isBindingCamera && !DashcamRecordingService.isRecordingActive) {
+        if (!recordingByService && controlsReady && !isBindingCamera && !recorder.isRecording) {
             startSelectedCamera()
         }
     }
@@ -337,7 +335,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         AppLogger.log(this, "MainActivity onDestroy")
         timer?.cancel()
-        if (!recordingByService) recorder.release()
+        recorder.release()
         super.onDestroy()
     }
 
